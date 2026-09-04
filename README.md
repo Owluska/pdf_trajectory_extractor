@@ -1,279 +1,73 @@
-# Извлечение стен и точек доступа из PDF-плана
+# DXF trajectory and Wi-Fi AP extractor
 
-Проект извлекает из PDF-плана две группы данных:
+This project combines two engineering sources:
 
-- объединенные кривые стен;
-- позиции точек доступа AP.
+- `input/geometry.dxf`: tunnel geometry containing `WALLS` and `TRAJECTORY` layers;
+- `input/ap_plan.pdf`: the matching plan containing colored AP symbols and AP names.
 
-Основной скрипт: `extract_walls_and_aps.py`.
-Параметры задаются в `config.yaml`.
+It extracts the DXF trajectory, detects and names APs from the configured PDF
+page, finds the PDF-to-DXF coordinate transformation from their shared vector
+geometry, and writes CSV and PDF results.
 
-## Быстрый запуск
+## Setup
+
+Python 3.10 or newer is recommended.
 
 ```bash
-python extract_walls_and_aps.py --config config.yaml
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-По умолчанию входной файл PDF должен лежать рядом с конфигом:
-
-```yaml
-input:
-  pdf_path: "trajectory.pdf"
-  page_index: 0
-```
-
-`page_index` нумеруется с нуля.
-
-## Результаты
-
-Финальные файлы записываются в папку `output/`.
-
-Скрипт пишет только:
-
-- `wall_curves.csv` — извлеченные кривые стен;
-- `ap_positions.csv` — найденные точки доступа.
-
-Промежуточные изображения, маски и диагностические CSV пишутся в `processing/`.
-
-## Логика алгоритмов
-
-### Как детектируются точки доступа
-
-Точки доступа ищутся не по растровому изображению, а по векторным объектам PDF.
-
-Алгоритм:
-
-1. Скрипт читает векторные элементы страницы через PyMuPDF.
-2. Для каждого элемента проверяет цвет линии или заливки.
-3. Цвет сравнивается с эталонами из `ap_extraction.colors_rgb_0_1`:
-
-```yaml
-orange: [0.973, 0.600, 0.118]
-violet: [0.369, 0.404, 0.686]
-```
-
-4. Допустимое отклонение задается параметром `ap_extraction.color_tolerance`.
-5. Учитываются только элементы, которые пересекают область `plan_roi_pdf_pt`.
-6. Для каждого подходящего элемента берется центр его bounding box.
-7. Центры группируются алгоритмом DBSCAN:
-
-```yaml
-dbscan_eps_pdf_pt: 0.8
-dbscan_min_samples: 4
-```
-
-8. После кластеризации отбрасываются слишком маленькие и слишком большие кластеры:
-
-- по числу элементов: `min_cluster_items`;
-- по ширине bounding box;
-- по высоте bounding box.
-
-9. Для каждого оставшегося кластера записывается центр AP, тип (`orange` или `violet`), bounding box и число элементов кластера.
-
-Итоговый файл: `output/ap_positions.csv`.
-
-### Как детектируются сноски
-
-Сноски удаляются до построения стен, потому что в PDF они тоже выглядят как черные векторные линии и могут ошибочно попасть в маску стен.
-
-Скрипт ищет компактные трехточечные выноски вида “горизонтальная полка + наклонная ножка”.
-
-Алгоритм:
-
-1. Рассматриваются только черные векторные элементы внутри `plan_roi_pdf_pt`.
-2. Элемент должен быть линией без заливки.
-3. Толщина линии должна попадать в диапазон:
-
-```yaml
-stroke_width_pdf_pt_min
-stroke_width_pdf_pt_max
-```
-
-4. Внутри элемента должно быть ровно два линейных сегмента.
-5. Концы сегментов объединяются с допуском `point_merge_tol_pdf_pt`.
-6. После объединения должна получиться структура из трех точек:
-
-- одна центральная точка;
-- две конечные точки;
-- две связи между ними.
-
-7. Геометрия проверяется по нескольким ограничениям:
-
-- длины ветвей;
-- общий размер bounding box;
-- угол изгиба;
-- одна ветвь почти горизонтальная;
-- вторая ветвь наклонена примерно как “ножка” выноски.
-
-8. Найденные сноски исключаются из набора кандидатов стен.
-
-Если включен `debug.save_removed_footnote_leaders_csv`, удаленные сноски записываются в:
-
-```text
-processing/removed_footnote_leaders.csv
-```
-
-### Как детектируется коридор / стены коридора
-
-В текущей версии скрипт не строит отдельную центральную линию коридора. Он извлекает связанные кривые стен внутри рабочей области плана. Эти кривые являются геометрической основой для дальнейшего анализа коридора.
-
-Алгоритм извлечения стен:
-
-1. PDF-страница рендерится в изображение с DPI из `render.dpi`.
-2. Параллельно скрипт читает векторные элементы PDF через PyMuPDF.
-3. Рабочая область ограничивается прямоугольником `plan_roi_pdf_pt`, чтобы исключить рамку листа, штамп и лишние подписи.
-4. В кандидаты стен попадают черные векторные линии:
-
-- цвет не ярче `wall_extraction.black_max_channel`;
-- толщина не меньше `wall_extraction.min_stroke_width_pdf_pt`;
-- линия пересекает ROI;
-- длина полилинии не меньше `wall_extraction.min_polyline_length_pdf_pt`.
-
-5. Кривые PDF семплируются в точки. Количество точек для кривых задается параметром:
-
-```yaml
-curve_sampling_points
-```
-
-6. Подходящие линии растеризуются в маску `raw_wall_candidates_mask.png`.
-7. Перед объединением из маски исключаются найденные сноски.
-8. Маска обрезается по ROI, а узкие полосы на границах ROI могут подавляться через:
-
-```yaml
-suppress_border_px
-```
-
-9. Близкие фрагменты стен объединяются морфологическим закрытием:
-
-```yaml
-wall_union.close_kernel_px
-wall_union.close_iterations
-```
-
-10. После объединения строятся connected components.
-11. Мелкие компоненты отбрасываются по площади и размеру:
-
-- `min_component_area_px`;
-- `min_component_span_px`;
-- `min_slender_component_area_px`;
-- `min_slender_component_span_px`;
-- `min_long_component_span_px`;
-- `min_long_component_area_px`.
-
-12. Очищенная маска скелетизируется.
-13. По скелету строятся полилинии:
-
-- пути между концами и развилками;
-- оставшиеся циклы;
-- короткие линии отбрасываются по `min_curve_length_px`;
-- геометрия упрощается через `curve_simplify_epsilon_px`.
-
-Итоговый файл со стенами:
-
-```text
-output/wall_curves.csv
-```
-
-Отладочные изображения для проверки этого этапа:
-
-- `processing/raw_wall_candidates_mask.png`;
-- `processing/united_wall_mask.png`;
-- `processing/wall_skeleton.png`;
-- `processing/wall_curves_preview_crop.png`.
-
-## Формат `wall_curves.csv`
-
-Каждая строка описывает одну вершину полилинии стены.
-
-Основные поля:
-
-- `curve_id` — идентификатор кривой стены;
-- `vertex_index` — номер вершины внутри кривой;
-- `x_pdf_pt`, `y_pdf_pt` — координаты в PDF points;
-- `x_px`, `y_px` — координаты в пикселях рендера;
-- `curve_length_pdf_pt` — длина кривой в PDF points;
-- `curve_length_px` — длина кривой в пикселях.
-
-Координаты PDF считаются от левого верхнего угла страницы.
-
-## Формат `ap_positions.csv`
-
-Каждая строка описывает одну найденную точку доступа.
-
-Основные поля:
-
-- `id` — идентификатор AP;
-- `type` — тип/цвет маркера (`orange` или `violet`);
-- `x_pdf_pt`, `y_pdf_pt` — координаты центра в PDF points;
-- `x_px`, `y_px` — координаты центра в пикселях;
-- `bbox_pdf_pt` — bounding box найденного маркера;
-- `cluster_items` — число векторных элементов, вошедших в кластер.
-
-## Настройка конфига
-
-Главные секции `config.yaml`:
-
-- `input` — путь к PDF и номер страницы.
-- `folders` — папки для итоговых файлов и промежуточной диагностики.
-- `output` — имена итоговых CSV.
-- `render` — DPI для рендера PDF.
-- `plan_roi_pdf_pt` — область плана в координатах PDF points.
-- `wall_extraction` — фильтры векторных кандидатов стен.
-- `footnote_leader_filter` — удаление коротких выносок/подписей, похожих на стены.
-- `wall_union` — объединение фрагментов стен, фильтрация компонент и трассировка скелета.
-- `ap_extraction` — поиск AP по цветам и кластеризация.
-- `debug` — сохранение отладочных изображений и CSV.
-
-Если включены:
-
-```yaml
-clean_output_dir: true
-clean_processing_dir: true
-```
-
-старые файлы внутри `output/` и `processing/` удаляются перед каждым запуском.
-
-## Диагностика
-
-При включенном `debug.save_processing_images` в `processing/` сохраняются:
-
-- `render_page_1_300dpi.png` — растеризованная страница PDF;
-- `raw_wall_candidates_mask.png` — сырая маска кандидатов стен;
-- `united_wall_mask.png` — объединенная и очищенная маска стен;
-- `wall_skeleton.png` — скелет стен;
-- `wall_curves_preview_crop.png` — предпросмотр извлеченных кривых.
-
-Дополнительные диагностические CSV:
-
-- `removed_footnote_leaders.csv` — удаленные выноски;
-- `wall_components.csv` — статистика компонент маски стен.
-
-## Зависимости
-
-Скрипт использует:
-
-- PyMuPDF;
-- OpenCV;
-- NumPy;
-- PyYAML;
-- scikit-image;
-- scikit-learn.
-
-Пример установки:
+## Run
 
 ```bash
-pip install pymupdf opencv-python numpy pyyaml scikit-image scikit-learn
+.venv/bin/python extract_trajectory_and_aps.py
 ```
 
-## Типовой рабочий процесс
-
-1. Положить PDF рядом с `config.yaml` или указать абсолютный путь в `input.pdf_path`.
-2. Настроить `plan_roi_pdf_pt`, чтобы исключить рамку листа, штамп и лишние подписи.
-3. Запустить:
+To use another configuration:
 
 ```bash
-python extract_walls_and_aps.py --config config.yaml
+.venv/bin/python extract_trajectory_and_aps.py --config config.json
 ```
 
-4. Проверить `output/wall_curves.csv` и `output/ap_positions.csv`.
-5. Если геометрия извлечена плохо, смотреть диагностические файлы в `processing/` и корректировать фильтры в `wall_extraction`, `footnote_leader_filter` и `wall_union`.
+## Inputs
+
+Input files have stable names under `input/`:
+
+- `geometry.dxf`
+- `ap_plan.pdf`
+
+The DXF parser reads `LINE` and `LWPOLYLINE` entities from the `WALLS` and
+`TRAJECTORY` layers. The configured PDF page is zero-based; page index `14`
+means page 15.
+
+## Outputs
+
+The script replaces these generated files on every successful run:
+
+- `output/trajectory.csv`: DXF trajectory vertices and entity IDs;
+- `output/ap_positions.csv`: AP name, PDF point/pixel position, transformed DXF
+  position, detection metadata, and registration error;
+- `output/combined_map.pdf`: zoomable DXF geometry with the trajectory in blue
+  and named AP positions in orange/violet.
+
+PDF pixel coordinates use `pdf.render_dpi` from `config.json`. PDF points always
+use 72 units per inch. DXF coordinates preserve the coordinate units of the
+input DXF.
+
+## Registration
+
+Registration uses black vector plan geometry from the PDF and wall vertices
+from the DXF. It fits translation, rotation, uniform scale, and optional
+reflection with a robust trimmed nearest-neighbour objective. This avoids the
+incorrect bounding-box-only mapping used by the previous implementation.
+
+The resulting median and 95th-percentile wall residuals are recorded in the AP
+CSV and printed after each run. This is an automated engineering registration;
+survey control points should still be used if certified coordinates are needed.
+
+## Configuration
+
+`config.json` controls input/output paths, PDF page and plan area, AP symbol
+colors, clustering limits, and registration sampling. Paths are resolved
+relative to the configuration file.

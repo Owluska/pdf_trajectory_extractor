@@ -1,2 +1,2 @@
-processing/*
-backup/*
+__pycache__/
+.venv/
