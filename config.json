@@ -1,0 +1,33 @@
+{
+  "input": {
+    "dxf": "input/geometry.dxf",
+    "pdf": "input/ap_plan.pdf",
+    "pdf_page_index": 14
+  },
+  "output": {
+    "trajectory_csv": "output/trajectory.csv",
+    "ap_csv": "output/ap_positions.csv",
+    "combined_pdf": "output/combined_map.pdf"
+  },
+  "pdf": {
+    "render_dpi": 144,
+    "plan_roi_pdf_pt": [40.0, 0.0, 4900.0, 940.0]
+  },
+  "ap_detection": {
+    "colors_rgb_0_1": {
+      "orange": [0.973, 0.600, 0.118],
+      "violet": [0.369, 0.404, 0.686]
+    },
+    "color_tolerance": 0.05,
+    "cluster_distance_pdf_pt": 5.0,
+    "min_cluster_items": 8,
+    "max_cluster_span_pdf_pt": 20.0
+  },
+  "registration": {
+    "black_max_channel": 0.10,
+    "trim_fraction": 0.80,
+    "max_source_points": 3000,
+    "max_target_points": 7000,
+    "random_seed": 9
+  }
+}
